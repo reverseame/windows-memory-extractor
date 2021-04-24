@@ -10,62 +10,47 @@
 #include <ctime>
 #include <algorithm>
 #include <iomanip>
-#include <getopt.h>
+#include <boost/program_options.hpp>
+#include <boost/algorithm/string.hpp>
 
 
 struct ArgumentManager {
 
 	void validateArguments(int argc, char* argv[]) {
-		char* suppliedPid, * suppliedModule, * suppliedProtections;
 
-		int option;
-		int option_index = 0;
+		namespace po = boost::program_options;
+		po::options_description description("Usage");
 
-		static struct option availableOptions[] =
-		{
-			{"help",        no_argument,       0, 'h'},
-			{"module",      required_argument, 0, 'm'},
-			{"protections", required_argument, 0, 'p'},
-			{0, 0, 0, 0}
-		};
+		description.add_options()
+			("help,h", "Display the help message")
+			("module,m", po::value<std::string>(), "Module")
+			("pid,p", po::value<int>()->required(), "Process ID")
+			("protections,s", po::value<std::string>(), "Memory protections")
+			;
 
-		// Check if optional arguments were supplied correctly
-		while ((option = getopt_long(argc, argv, "hp:m:", availableOptions, &option_index)) != -1) {
+		po::variables_map vm;
+		po::store(po::command_line_parser(argc, argv).options(description).run(), vm);
 
-			switch (option) {
-			case 'h':
-				displayHelp();
-				exit(0);
-
-			case 'm':
-				printf("option -m has the value `%s'\n", optarg);
-				suppliedModule = optarg;
-				isModuleOptionSupplied = true;
-				break;
-
-			case 'p':
-				printf("option -p has the value `%s'\n", optarg);
-				suppliedProtections = optarg;
-				isProtectionsOptionSupplied = true;
-				break;
-
-			default:
-				exit(1);
-			}
+		if (vm.count("help")) {
+			std::cout << description << std::endl;
+			exit(0);
 		}
 
-		// Check if only one mandatory argument was supplied
-		if (optind == argc - 1) {
-			printf("PID supplied: %s\n", argv[optind]);
-			suppliedPid = argv[optind];
-		}
-		else {
-			fprintf(stderr, "One, and only one, mandatory argument has to be supplied\n");
-			exit(1);
+		po::notify(vm);
+
+		if (vm.count("module")) {
+			std::cout << "Module: " << vm["module"].as<std::string>() << std::endl;
 		}
 
-		// Validate the contents of the arguments
-		pid = validatePid(suppliedPid);
+		if (vm.count("pid")) {
+			std::cout << "Pid: " << vm["pid"].as<int>() << std::endl;
+			pid = vm["pid"].as<int>();
+		}
+
+		if (vm.count("protections")) {
+			std::cout << "Protections: " << vm["protections"].as<std::string>() << std::endl;
+		}
+
 	}
 
 	int getPid() {
@@ -90,28 +75,6 @@ struct ArgumentManager {
 
 private:
 
-	void displayHelp() {
-		printf("This is the help text the user would see.\n");
-	}
-
-	int validatePid(char* suppliedPid) {
-		try {
-			return std::stoi(std::string{ suppliedPid });
-		}
-		catch (const std::invalid_argument&) {
-			fprintf(stderr, "Error: The PID is not a valid number\n");
-			exit(1);
-		}
-		catch (const std::out_of_range&) {
-			fprintf(stderr, "Error: The PID supplied is too big\n");
-			exit(1);
-		}
-		catch (...) {
-			fprintf(stderr, "Error: An unexpected error has occurred\n");
-			exit(1);
-		}
-	}
-
 	// Arguments
 	int pid;
 	std::string module;
@@ -132,7 +95,7 @@ struct MemoryExtractionManager {
 		HANDLE processHandle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, argumentManager.getPid());
 
 		if (processHandle == NULL) {
-			fprintf(stderr, "Error: A handle to the process specified could not be obtained\n");
+			std::cerr << "Error: A handle to the process specified could not be obtained." << std::endl;
 			exit(1);
 		}
 
@@ -162,7 +125,7 @@ struct MemoryExtractionManager {
 					std::stringstream fileName;
 					fileName << memInfo.BaseAddress << "_" << std::hex << memInfo.RegionSize << ".dmp";
 
-					std::string filePath = directoryName.str() + "/" + fileName.str().erase(0, 2);
+					std::string filePath = directoryName.str() + "/" + boost::algorithm::to_lower_copy(fileName.str().erase(0, 2));
 
 					std::ofstream outfile(filePath, std::ofstream::binary);
 					outfile.write(memoryContents.get(), memInfo.RegionSize);
@@ -193,11 +156,11 @@ struct ExecutionManager {
 			memoryExtractionManager.extractMemoryContents();
 		}
 		catch (const std::exception& ex) {
-			fprintf(stderr, "Error: %s\n", ex.what());
+			std::cerr << "Error: " << ex.what() << "." << std::endl;
 			exit(1);
 		}
 		catch (...) {
-			fprintf(stderr, "Error: An unexpected error has occurred\n");
+			std::cerr << "Error: An unexpected error has occurred." << std::endl;
 			exit(1);
 		}
 	}
