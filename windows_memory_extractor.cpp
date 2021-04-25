@@ -18,6 +18,8 @@
 #include <cryptopp/hex.h>
 #include <cryptopp/files.h>
 #include <cryptopp/sha.h>
+#include <tlhelp32.h> 
+#include <tchar.h> 
 
 
 struct ArgumentManager {
@@ -28,7 +30,8 @@ struct ArgumentManager {
 		po::options_description description("Usage");
 
 		description.add_options()
-			("help,h", "Display the help message")
+			("help,h", "Display this help message")
+			("list-modules", "List all the modules of a process")
 			("module,m", po::value<std::string>(), "Module")
 			("pid,p", po::value<int>()->required(), "Process ID")
 			("protections,s", po::value<std::string>(), "Memory protections")
@@ -44,12 +47,15 @@ struct ArgumentManager {
 
 		po::notify(vm);
 
+		if (vm.count("list-modules")) {
+			isListModulesOptionSupplied = true;
+		}
+
 		if (vm.count("module")) {
 			std::cout << "Module: " << vm["module"].as<std::string>() << std::endl;
 		}
 
 		if (vm.count("pid")) {
-			std::cout << "Pid: " << vm["pid"].as<int>() << std::endl;
 			pid = vm["pid"].as<int>();
 		}
 
@@ -79,6 +85,10 @@ struct ArgumentManager {
 		return isProtectionsOptionSupplied;
 	}
 
+	bool getIsListModulesOptionSupplied() {
+		return isListModulesOptionSupplied;
+	}
+
 private:
 
 	// Arguments
@@ -89,6 +99,7 @@ private:
 	// Options
 	bool isModuleOptionSupplied;
 	bool isProtectionsOptionSupplied;
+	bool isListModulesOptionSupplied;
 
 };
 
@@ -105,6 +116,10 @@ struct MemoryExtractionManager {
 			exit(1);
 		}
 
+		if (argumentManager.getIsListModulesOptionSupplied()) {
+			listModules();
+		}
+
 		// Create a directory with a representative name
 		// Nomenclature: PID_Day-Month-Year_Hour-Minute-Second_UTC
 
@@ -115,7 +130,7 @@ struct MemoryExtractionManager {
 		directoryNameStream << std::dec << argumentManager.getPid() << "_" << std::put_time(&buf, "%d-%m-%Y_%H-%M-%S_UTC");
 		CreateDirectoryA(directoryNameStream.str().c_str(), NULL);
 
-		std::ofstream resultsFile( directoryNameStream.str() + "/results.txt", std::ofstream::out);
+		std::ofstream resultsFile(directoryNameStream.str() + "/results.txt", std::ofstream::out);
 		resultsFile << "List of .dmp files generated:\n";
 		int dmpFilesGeneratedCount = 0;
 
@@ -175,6 +190,38 @@ private:
 		resultsFile << fileName << ", SHA-256: ";
 		StringSource(sha256Digest, true, new Redirector(hexEncoder));
 		resultsFile << "\n";
+	}
+
+	void listModules() {
+		HANDLE snapshotHandle = INVALID_HANDLE_VALUE;
+		MODULEENTRY32 moduleEntry;
+
+		//  Get a snapshot of all the modules
+		snapshotHandle = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, argumentManager.getPid());
+		if (snapshotHandle == INVALID_HANDLE_VALUE) {
+			std::cerr << "Error: The modules could not be listed." << std::endl;
+			exit(1);
+		}
+
+		moduleEntry.dwSize = sizeof(MODULEENTRY32);
+
+		//  Get the information about the first module 
+		if (!Module32First(snapshotHandle, &moduleEntry)) {
+			std::cerr << "Error: The modules could not be listed." << std::endl;
+			CloseHandle(snapshotHandle);
+			exit(1);
+		}
+
+		//  Get the information about the rest of the modules 
+		do {
+			_tprintf(TEXT("Name: %s\n"), moduleEntry.szModule);
+			_tprintf(TEXT("Path: %s\n"), moduleEntry.szExePath);
+			_tprintf(TEXT("Base address: %p\n"), moduleEntry.modBaseAddr);
+			_tprintf(TEXT("Size (in bytes): %d\n\n"), moduleEntry.modBaseSize);
+
+		} while (Module32Next(snapshotHandle, &moduleEntry));
+
+		CloseHandle(snapshotHandle);
 	}
 
 	ArgumentManager& argumentManager;
