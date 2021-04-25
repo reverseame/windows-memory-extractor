@@ -1,4 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
+#define __STDC_WANT_LIB_EXT1__ 1
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,10 +9,15 @@
 #include <sstream>
 #include <string>
 #include <ctime>
+#include <time.h>
 #include <algorithm>
 #include <iomanip>
 #include <boost/program_options.hpp>
 #include <boost/algorithm/string.hpp>
+#include <cryptopp/cryptlib.h>
+#include <cryptopp/hex.h>
+#include <cryptopp/files.h>
+#include <cryptopp/sha.h>
 
 
 struct ArgumentManager {
@@ -103,9 +109,15 @@ struct MemoryExtractionManager {
 		// Nomenclature: PID_Day-Month-Year_Hour-Minute-Second_UTC
 
 		std::time_t timestamp = std::time(nullptr);
-		std::stringstream directoryName;
-		directoryName << std::dec << argumentManager.getPid() << "_" << std::put_time(std::gmtime(&timestamp), "%d-%m-%Y_%H-%M-%S_UTC");
-		CreateDirectory(directoryName.str().c_str(), NULL);
+		struct tm buf;
+		gmtime_s(&buf, &timestamp);
+		std::stringstream directoryNameStream;
+		directoryNameStream << std::dec << argumentManager.getPid() << "_" << std::put_time(&buf, "%d-%m-%Y_%H-%M-%S_UTC");
+		CreateDirectoryA(directoryNameStream.str().c_str(), NULL);
+
+		std::ofstream resultsFile( directoryNameStream.str() + "/results.txt", std::ofstream::out);
+		resultsFile << "List of .dmp files generated:\n";
+		int dmpFilesGeneratedCount = 0;
 
 		unsigned char* p = NULL;
 		MEMORY_BASIC_INFORMATION memInfo;
@@ -122,24 +134,48 @@ struct MemoryExtractionManager {
 					// Each file has a representative name
 					// Nomenclature: virtualAddress_sizeOfMemoryRegion
 
-					std::stringstream fileName;
-					fileName << memInfo.BaseAddress << "_" << std::hex << memInfo.RegionSize << ".dmp";
+					std::stringstream fileNameStream;
+					fileNameStream << memInfo.BaseAddress << "_" << std::hex << memInfo.RegionSize << ".dmp";
+					std::string fileName = fileNameStream.str();
+					boost::algorithm::to_lower(fileName);
 
-					std::string filePath = directoryName.str() + "/" + boost::algorithm::to_lower_copy(fileName.str().erase(0, 2));
+					std::string filePath = directoryNameStream.str() + "/" + fileName;
 
-					std::ofstream outfile(filePath, std::ofstream::binary);
-					outfile.write(memoryContents.get(), memInfo.RegionSize);
-					outfile.close();
+					std::ofstream memoryDataFile(filePath, std::ofstream::binary);
+					memoryDataFile.write(memoryContents.get(), memInfo.RegionSize);
+					memoryDataFile.close();
+
+					dmpFilesGeneratedCount++;
+					registerDmpFileCreation(fileName, memoryContents.get(), memInfo.RegionSize, resultsFile);
 				}
 			}
 
 			p += memInfo.RegionSize;
 		}
 
+		resultsFile << "Number of .dmp files generated: " << dmpFilesGeneratedCount << std::endl;
+		resultsFile.close();
 		CloseHandle(processHandle);
 	}
 
 private:
+
+	void registerDmpFileCreation(std::string& fileName, char* fileContents, size_t fileSize, std::ofstream& resultsFile) {
+		using namespace CryptoPP;
+
+		// Calculate the SHA-256 hash of the .dmp file contents
+		HexEncoder hexEncoder(new FileSink(resultsFile), false);
+		std::string sha256Digest;
+		SHA256 hash;
+		hash.Update((const byte*)fileContents, fileSize);
+		sha256Digest.resize(hash.DigestSize());
+		hash.Final((byte*)&sha256Digest[0]);
+
+		// Create an entry in the results file for the new .dmp file
+		resultsFile << fileName << ", SHA-256: ";
+		StringSource(sha256Digest, true, new Redirector(hexEncoder));
+		resultsFile << "\n";
+	}
 
 	ArgumentManager& argumentManager;
 
