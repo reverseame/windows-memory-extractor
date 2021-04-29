@@ -12,16 +12,17 @@
 #include <time.h>
 #include <algorithm>
 #include <iomanip>
-#include <boost/program_options.hpp>
-#include <boost/algorithm/string.hpp>
-#include <cryptopp/cryptlib.h>
-#include <cryptopp/hex.h>
-#include <cryptopp/files.h>
-#include <cryptopp/sha.h>
 #include <tlhelp32.h> 
 #include <tchar.h> 
 #include <locale>
 #include <codecvt>
+#include <boost/program_options.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/foreach.hpp>
+#include <cryptopp/cryptlib.h>
+#include <cryptopp/hex.h>
+#include <cryptopp/files.h>
+#include <cryptopp/sha.h>
 
 
 struct ArgumentManager {
@@ -64,7 +65,7 @@ struct ArgumentManager {
 		}
 
 		if (vm.count("protections")) {
-			std::cout << "Protections (not implemented yet): " << vm["protections"].as<std::string>() << std::endl;
+			validateProtections(vm["protections"].as<std::string>());
 		}
 
 	}
@@ -73,11 +74,11 @@ struct ArgumentManager {
 		return pid;
 	}
 
-	std::string getModule() {
+	std::string& getModule() {
 		return module;
 	}
 
-	std::string getProtections() {
+	std::vector<std::string>& getProtections() {
 		return protections;
 	}
 
@@ -91,16 +92,47 @@ struct ArgumentManager {
 
 private:
 
+	void validateProtections(std::string suppliedProtectionsAsString) {
+		std::vector<std::string> supportedProtections{
+			"PAGE_EXECUTE",
+			"PAGE_EXECUTE_READ",
+			"PAGE_EXECUTE_READWRITE",
+			"PAGE_EXECUTE_WRITECOPY",
+			"PAGE_READONLY",
+			"PAGE_READWRITE",
+			"PAGE_WRITECOPY"
+		};
+		std::vector<std::string> suppliedProtections;
+		boost::split(suppliedProtections, suppliedProtectionsAsString, boost::is_any_of(" "));
+		BOOST_FOREACH(const std::string & protection, suppliedProtections) {
+			bool isProtectionRepeated = std::find(protections.begin(), protections.end(), protection) != protections.end();
+			if (isProtectionRepeated) {
+				throw std::invalid_argument{ "The same memory protection cannot be supplied more than once" };
+			}
+
+			bool isProtectionSupported = std::find(supportedProtections.begin(), supportedProtections.end(), protection) != supportedProtections.end();
+			if (isProtectionSupported) {
+				protections.push_back(protection);
+			}
+			else {
+				throw std::invalid_argument{ "The memory protections supplied are invalid. "
+					"Supply only supported ones, separate each one with a space, and enclose all of them in quotes" };
+			}
+		}
+		isProtectionsOptionSupplied = true;
+	}
+
 	// Arguments
 	int pid;
 	std::string module;
-	std::string protections;
+	std::vector<std::string> protections;
 
 	// Options
 	bool isModuleOptionSupplied;
 	bool isProtectionsOptionSupplied;
 
 };
+
 
 struct MemoryExtractionManager {
 
@@ -142,8 +174,7 @@ struct MemoryExtractionManager {
 		// Create files that contain raw memory data inside the directory prevously created
 		while (VirtualQueryEx(processHandle, memoryPointer, &memInfo, sizeof(memInfo)) != 0 && !isMemoryExtractionFinished) {
 
-			if ((isModuleOptionSupplied && memInfo.State == MEM_COMMIT)
-				|| (!isModuleOptionSupplied && memInfo.State == MEM_COMMIT && (memInfo.AllocationProtect == PAGE_READONLY || memInfo.AllocationProtect == PAGE_READWRITE))) {
+			if (makeExtractionDecision(memInfo)) {
 				extractMemoryRegion(processHandle, memInfo, resultsFile);
 			}
 
@@ -162,7 +193,7 @@ struct MemoryExtractionManager {
 
 private:
 
-	MODULEENTRY32 getModuleInformation(std::string suppliedModuleName) {
+	MODULEENTRY32 getModuleInformation(std::string& suppliedModuleName) {
 		HANDLE snapshotHandle = INVALID_HANDLE_VALUE;
 		MODULEENTRY32 moduleEntry;
 
@@ -188,6 +219,7 @@ private:
 			moduleName = stringConverter.to_bytes(moduleEntry.szModule);
 			boost::algorithm::to_lower(moduleName);
 			if (boost::iequals(suppliedModuleName, moduleName)) {
+				CloseHandle(snapshotHandle);
 				return moduleEntry;
 			}
 
@@ -211,6 +243,48 @@ private:
 		return directoryNameStream.str();
 	}
 
+	bool makeExtractionDecision(MEMORY_BASIC_INFORMATION& memInfo) {
+		DWORD state = memInfo.State;
+		DWORD protection = memInfo.Protect;
+		if (argumentManager.getIsProtectionsOptionSupplied()) {
+			std::vector<std::string>& protections = argumentManager.getProtections();
+			bool isPageExecuteSupplied = std::find(protections.begin(), protections.end(), "PAGE_EXECUTE") != protections.end();
+			bool isPageExecuteReadSupplied = std::find(protections.begin(), protections.end(), "PAGE_EXECUTE_READ") != protections.end();
+			bool isPageExecuteReadWriteSupplied = std::find(protections.begin(), protections.end(), "PAGE_EXECUTE_READWRITE") != protections.end();
+			bool isPageExecuteWriteCopySupplied = std::find(protections.begin(), protections.end(), "PAGE_EXECUTE_WRITECOPY") != protections.end();
+			bool isPageReadOnlySupplied = std::find(protections.begin(), protections.end(), "PAGE_READONLY") != protections.end();
+			bool isPageReadWriteSupplied = std::find(protections.begin(), protections.end(), "PAGE_READWRITE") != protections.end();
+			bool isPageWriteCopySupplied = std::find(protections.begin(), protections.end(), "PAGE_WRITECOPY") != protections.end();
+			return state == MEM_COMMIT
+				&& ((protection == PAGE_EXECUTE && isPageExecuteSupplied)
+					|| (protection == PAGE_EXECUTE_READ && isPageExecuteReadSupplied)
+					|| (protection == PAGE_EXECUTE_READWRITE && isPageExecuteReadWriteSupplied)
+					|| (protection == PAGE_EXECUTE_WRITECOPY && isPageExecuteWriteCopySupplied)
+					|| (protection == PAGE_READONLY && isPageReadOnlySupplied)
+					|| (protection == PAGE_READWRITE && isPageReadWriteSupplied)
+					|| (protection == PAGE_WRITECOPY && isPageWriteCopySupplied)
+					);
+		}
+		else if (argumentManager.getIsModuleOptionSupplied()) {
+			return state == MEM_COMMIT
+				&& (protection == PAGE_EXECUTE
+					|| protection == PAGE_EXECUTE_READ
+					|| protection == PAGE_EXECUTE_READWRITE
+					|| protection == PAGE_EXECUTE_WRITECOPY
+					|| protection == PAGE_READONLY
+					|| protection == PAGE_READWRITE
+					|| protection == PAGE_WRITECOPY
+					);
+		}
+		else {
+			return state == MEM_COMMIT
+				&& (protection == PAGE_READONLY
+					|| protection == PAGE_READWRITE
+					|| protection == PAGE_WRITECOPY
+					);
+		}
+	}
+
 	void extractMemoryRegion(HANDLE& processHandle, MEMORY_BASIC_INFORMATION& memInfo, std::ofstream& resultsFile) {
 		auto memoryContents = std::make_unique<char[]>(memInfo.RegionSize);
 		SIZE_T numberOfBytesRead = 0;
@@ -232,25 +306,59 @@ private:
 			memoryDataFile.close();
 
 			dmpFilesGeneratedCount++;
-			registerDmpFileCreation(fileName, memoryContents.get(), memInfo.RegionSize, resultsFile);
+			registerDmpFileCreation(fileName, memoryContents.get(), memInfo, resultsFile);
 		}
 	}
 
-	void registerDmpFileCreation(std::string& fileName, char* fileContents, size_t fileSize, std::ofstream& resultsFile) {
+	void registerDmpFileCreation(std::string& fileName, char* fileContents, MEMORY_BASIC_INFORMATION& memInfo, std::ofstream& resultsFile) {
 		using namespace CryptoPP;
 
 		// Calculate the SHA-256 hash of the .dmp file contents
 		HexEncoder hexEncoder(new FileSink(resultsFile), false);
 		std::string sha256Digest;
 		SHA256 hash;
-		hash.Update((const byte*)fileContents, fileSize);
+		hash.Update((const byte*)fileContents, memInfo.RegionSize);
 		sha256Digest.resize(hash.DigestSize());
 		hash.Final((byte*)&sha256Digest[0]);
 
 		// Create an entry in the results file for the new .dmp file
-		resultsFile << fileName << ", SHA-256: ";
+		resultsFile << "Filename: " << fileName << ", SHA-256: ";
 		StringSource(sha256Digest, true, new Redirector(hexEncoder));
-		resultsFile << "\n";
+		std::string memoryProtection;
+		switch (memInfo.Protect) {
+		case PAGE_EXECUTE: {
+			memoryProtection = "PAGE_EXECUTE";
+			break;
+		}
+		case PAGE_EXECUTE_READ: {
+			memoryProtection = "PAGE_EXECUTE_READ";
+			break;
+		}
+		case PAGE_EXECUTE_READWRITE: {
+			memoryProtection = "PAGE_EXECUTE_READWRITE";
+			break;
+		}
+		case PAGE_EXECUTE_WRITECOPY: {
+			memoryProtection = "PAGE_EXECUTE_WRITECOPY";
+			break;
+		}
+		case PAGE_READONLY: {
+			memoryProtection = "PAGE_READONLY";
+			break;
+		}
+		case PAGE_READWRITE: {
+			memoryProtection = "PAGE_READWRITE";
+			break;
+		}
+		case PAGE_WRITECOPY: {
+			memoryProtection = "PAGE_WRITECOPY";
+			break;
+		}
+		default: {
+			memoryProtection = "The memory protection is not supported by this tool yet";
+		}
+		}
+		resultsFile << ", Memory protection: " << memoryProtection << "\n";
 	}
 
 	ArgumentManager& argumentManager;
