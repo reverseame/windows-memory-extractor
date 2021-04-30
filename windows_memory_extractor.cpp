@@ -30,13 +30,15 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		po::options_description description("Usage");
+		std::string version = "1.0";
+		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
 			("help,h", "Display this help message")
 			("module,m", po::value<std::string>(), "Module of the process")
 			("pid,p", po::value<int>()->required(), "Process ID")
 			("protections,s", po::value<std::string>(), "Memory protections")
+			("version,v", "Version")
 			;
 
 		po::variables_map vm;
@@ -44,6 +46,11 @@ struct ArgumentManager {
 
 		if (vm.count("help")) {
 			std::cout << description << std::endl;
+			exit(0);
+		}
+
+		if (vm.count("version")) {
+			std::cout << "Windows memory extractor " << version << std::endl;
 			exit(0);
 		}
 
