@@ -30,7 +30,7 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "1.0";
+		std::string version = "v1.0";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
