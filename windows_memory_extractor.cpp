@@ -30,7 +30,7 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.0";
+		std::string version = "v1.0.1";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
@@ -205,7 +205,7 @@ private:
 		MODULEENTRY32 moduleEntry;
 
 		// Get a snapshot of all the modules
-		snapshotHandle = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, argumentManager.getPid());
+		snapshotHandle = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, argumentManager.getPid());
 		if (snapshotHandle == INVALID_HANDLE_VALUE) {
 			throw std::exception{ "The modules of the specified process could not be retrieved" };
 		}
