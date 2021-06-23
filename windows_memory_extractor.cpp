@@ -30,11 +30,12 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.1";
+		std::string version = "v1.0.2";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
 			("help,h", "Display this help message")
+			("join,j", "Generate an additional .dmp file with the contents of the other .dmp files joined")
 			("module,m", po::value<std::string>(), "Module of the process")
 			("pid,p", po::value<int>()->required(), "Process ID")
 			("protections,s", po::value<std::string>(), "Memory protections")
@@ -65,6 +66,13 @@ struct ArgumentManager {
 				module = suppliedModule;
 				isModuleOptionSupplied = true;
 			}
+
+			if (vm.count("join")) {
+				isJoinOptionSupplied = true;
+			}
+		}
+		else if (vm.count("join")) {
+			throw std::invalid_argument{ "The --join option can only be used alongside the --module option" };
 		}
 
 		if (vm.count("pid")) {
@@ -95,6 +103,10 @@ struct ArgumentManager {
 
 	bool getIsProtectionsOptionSupplied() {
 		return isProtectionsOptionSupplied;
+	}
+
+	bool getIsJoinOptionSupplied() {
+		return isJoinOptionSupplied;
 	}
 
 private:
@@ -137,6 +149,7 @@ private:
 	// Options
 	bool isModuleOptionSupplied;
 	bool isProtectionsOptionSupplied;
+	bool isJoinOptionSupplied;
 
 };
 
@@ -192,7 +205,28 @@ struct MemoryExtractionManager {
 			}
 
 		}
+		if (argumentManager.getIsJoinOptionSupplied()) {
+			using namespace CryptoPP;
+			dmpFilesGeneratedCount++;
 
+			// Calculate the SHA-256 of the file joinedModuleContents.dmp
+			std::ifstream joinedModuleContentsStream(directoryName + "/joinedModuleContents.dmp", std::ios::in | std::ios::binary);
+			std::string contents((std::istreambuf_iterator<char>(joinedModuleContentsStream)),
+				(std::istreambuf_iterator<char>()));
+			HexEncoder hexEncoder(new FileSink(resultsFile), false);
+			std::string sha256Digest;
+			SHA256 hash;
+			hash.Update((const byte*)contents.c_str(), contents.length());
+			sha256Digest.resize(hash.DigestSize());
+			hash.Final((byte*)&sha256Digest[0]);
+
+			// Create an entry in the results file for the joinedModuleContents.dmp file
+			resultsFile << "Filename: " << "joinedModuleContents.dmp" << ", SHA-256: ";
+			StringSource(sha256Digest, true, new Redirector(hexEncoder));
+			resultsFile << "\n";
+
+			joinedModuleContentsStream.close();
+		}
 		resultsFile << "Number of .dmp files generated: " << dmpFilesGeneratedCount << std::endl;
 		resultsFile.close();
 		CloseHandle(processHandle);
@@ -298,7 +332,7 @@ private:
 
 		if (ReadProcessMemory(processHandle, memInfo.BaseAddress, memoryContents.get(), memInfo.RegionSize, &numberOfBytesRead) != 0) {
 
-			// Each .dmp file has a representative name
+			// Each .dmp file that corresponds to one memory region has a representative name
 			// Nomenclature: virtualAddress_sizeOfMemoryRegion
 
 			std::stringstream fileNameStream;
@@ -314,6 +348,13 @@ private:
 
 			dmpFilesGeneratedCount++;
 			registerDmpFileCreation(fileName, memoryContents.get(), memInfo, resultsFile);
+
+			if (argumentManager.getIsJoinOptionSupplied()) {
+				std::string fullModuleFilePath = directoryName + "/" + "joinedModuleContents.dmp";
+				std::ofstream fullModuleDataFile(fullModuleFilePath, std::ofstream::app | std::ofstream::binary);
+				fullModuleDataFile.write(memoryContents.get(), memInfo.RegionSize);
+				fullModuleDataFile.close();
+			}
 		}
 	}
 
