@@ -30,12 +30,13 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.2";
+		std::string version = "v1.0.3";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
 			("help,h", "Display this help message")
 			("join,j", "Generate an additional .dmp file with the contents of the other .dmp files joined")
+			("output-directory,o", po::value<std::string>(), "Directory where the output will be stored")
 			("module,m", po::value<std::string>(), "Module of the process")
 			("pid,p", po::value<int>()->required(), "Process ID")
 			("protections,s", po::value<std::string>(), "Memory protections")
@@ -83,6 +84,16 @@ struct ArgumentManager {
 			validateProtections(vm["protections"].as<std::string>());
 		}
 
+		if (vm.count("output-directory")) {
+			if (directoryExists(vm["output-directory"].as<std::string>())) {
+				outputDirectory = vm["output-directory"].as<std::string>();
+				isOutputDirectoryOptionSupplied = true;
+			}
+			else {
+				throw std::invalid_argument{ "The directory supplied does not exist" };
+			}
+		}
+
 	}
 
 	int getPid() {
@@ -97,6 +108,10 @@ struct ArgumentManager {
 		return protections;
 	}
 
+	std::string& getOutputDirectory() {
+		return outputDirectory;
+	}
+
 	bool getIsModuleOptionSupplied() {
 		return isModuleOptionSupplied;
 	}
@@ -107,6 +122,10 @@ struct ArgumentManager {
 
 	bool getIsJoinOptionSupplied() {
 		return isJoinOptionSupplied;
+	}
+
+	bool getIsOutputDirectoryOptionSupplied() {
+		return isOutputDirectoryOptionSupplied;
 	}
 
 private:
@@ -141,15 +160,32 @@ private:
 		isProtectionsOptionSupplied = true;
 	}
 
+	bool directoryExists(const std::string& suppliedDirectoryAsString)
+	{
+		DWORD fileAttributes = GetFileAttributesA(suppliedDirectoryAsString.c_str());
+
+		if (fileAttributes == INVALID_FILE_ATTRIBUTES) {
+			return false; // Something is wrong with the path
+		}
+
+		if (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+			return true; // The path corresponds with a directory
+		}
+
+		return false; // The path does not correspond with a directory
+	}
+
 	// Arguments
 	int pid;
 	std::string module;
 	std::vector<std::string> protections;
+	std::string outputDirectory;
 
 	// Options
 	bool isModuleOptionSupplied;
 	bool isProtectionsOptionSupplied;
 	bool isJoinOptionSupplied;
+	bool isOutputDirectoryOptionSupplied;
 
 };
 
@@ -279,6 +315,9 @@ private:
 		struct tm buf;
 		gmtime_s(&buf, &timestamp);
 		std::stringstream directoryNameStream;
+		if (argumentManager.getIsOutputDirectoryOptionSupplied()) {
+			directoryNameStream << argumentManager.getOutputDirectory() << "/";
+		}
 		directoryNameStream << std::dec << argumentManager.getPid() << "_" << std::put_time(&buf, "%d-%m-%Y_%H-%M-%S_UTC");
 		CreateDirectoryA(directoryNameStream.str().c_str(), NULL);
 		return directoryNameStream.str();
@@ -427,11 +466,11 @@ struct ExecutionManager {
 		}
 		catch (const std::exception& ex) {
 			std::cerr << "Error: " << ex.what() << "." << std::endl;
-			exit(1);
+			exit(GetLastError());
 		}
 		catch (...) {
 			std::cerr << "Error: An unexpected error has occurred." << std::endl;
-			exit(1);
+			exit(GetLastError());
 		}
 	}
 
