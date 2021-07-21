@@ -30,7 +30,7 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.3";
+		std::string version = "v1.0.4";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
@@ -215,7 +215,27 @@ struct MemoryExtractionManager {
 
 		HANDLE processHandle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, argumentManager.getPid());
 		if (processHandle == NULL) {
-			throw std::exception{ "A handle to the specified process could not be obtained" };
+
+			// Try to enable SeDebugPrivilege and call OpenProcess again
+			HANDLE accessToken;
+
+			if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &accessToken) == FALSE) {
+				throw std::exception{ "An error has occurred trying to enable SeDebugPrivlege at function OpenProcessToken" };
+			}
+
+			if (!SetPrivilege(accessToken, SE_DEBUG_NAME, true)) {
+				CloseHandle(accessToken);
+				throw std::exception{ "An error has occurred trying to enable SeDebugPrivlege at function SetPrivilege" };
+			}
+
+			processHandle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, argumentManager.getPid());
+
+			CloseHandle(accessToken);
+
+			if (processHandle == NULL) {
+				throw std::exception{ "A handle to the specified process could not be obtained" };
+			}
+
 		}
 
 		directoryName = createDirectory();
@@ -446,6 +466,56 @@ private:
 		}
 		}
 		resultsFile << ", Memory protection: " << memoryProtection << "\n";
+	}
+
+	// Function found here: https://docs.microsoft.com/en-us/windows/win32/secauthz/enabling-and-disabling-privileges-in-c--
+	BOOL SetPrivilege(
+		HANDLE hToken,          // access token handle
+		LPCTSTR lpszPrivilege,  // name of privilege to enable/disable
+		BOOL bEnablePrivilege   // to enable or disable privilege
+	)
+	{
+		TOKEN_PRIVILEGES tp;
+		LUID luid;
+
+		if (!LookupPrivilegeValue(
+			NULL,            // lookup privilege on local system
+			lpszPrivilege,   // privilege to lookup 
+			&luid))        // receives LUID of privilege
+		{
+			printf("LookupPrivilegeValue error: %u\n", GetLastError());
+			return FALSE;
+		}
+
+		tp.PrivilegeCount = 1;
+		tp.Privileges[0].Luid = luid;
+		if (bEnablePrivilege)
+			tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+		else
+			tp.Privileges[0].Attributes = 0;
+
+		// Enable the privilege or disable all privileges.
+
+		if (!AdjustTokenPrivileges(
+			hToken,
+			FALSE,
+			&tp,
+			sizeof(TOKEN_PRIVILEGES),
+			(PTOKEN_PRIVILEGES)NULL,
+			(PDWORD)NULL))
+		{
+			printf("AdjustTokenPrivileges error: %u\n", GetLastError());
+			return FALSE;
+		}
+
+		if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+
+		{
+			printf("The token does not have the specified privilege. \n");
+			return FALSE;
+		}
+
+		return TRUE;
 	}
 
 	ArgumentManager& argumentManager;
