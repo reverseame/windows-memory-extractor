@@ -23,6 +23,7 @@
 #include <cryptopp/hex.h>
 #include <cryptopp/files.h>
 #include <cryptopp/sha.h>
+#include <psapi.h>
 
 
 struct ArgumentManager {
@@ -30,7 +31,7 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.4";
+		std::string version = "v1.0.5";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
@@ -67,13 +68,15 @@ struct ArgumentManager {
 				module = suppliedModule;
 				isModuleOptionSupplied = true;
 			}
-
-			if (vm.count("join")) {
-				isJoinOptionSupplied = true;
-			}
 		}
-		else if (vm.count("join")) {
-			throw std::invalid_argument{ "The --join option can only be used alongside the --module option" };
+
+		if (vm.count("join")) {
+			isJoinOptionSupplied = true;
+			if (!isModuleOptionSupplied) {
+				// The --join option was included to work alongside the --module option
+				// If the --join option is supplied without the --module option, the tool interprets that the user is asking for the contents of the main module
+				isModuleOptionSupplied = true;
+			}
 		}
 
 		if (vm.count("pid")) {
@@ -98,6 +101,10 @@ struct ArgumentManager {
 
 	int getPid() {
 		return pid;
+	}
+
+	void setModule(std::string newModule) {
+		module = newModule;
 	}
 
 	std::string& getModule() {
@@ -196,23 +203,6 @@ struct MemoryExtractionManager {
 
 	void extractMemoryContents() {
 
-		BYTE* memoryPointer = NULL; // Virtual address 0x0000000000000000
-
-		// Module option related variables
-		BYTE* moduleBaseAddress;
-		DWORD moduleSize;
-		size_t moduleBaseAddressAsNumber;
-
-		// If the --module option is supplied, I only extract the memory corresponding to the requiered module
-		// In order to do that, I start at the module's base address, instead of at virtual address 0x0000000000000000
-		if (argumentManager.getIsModuleOptionSupplied()) {
-			MODULEENTRY32 moduleInformation = getModuleInformation(argumentManager.getModule());
-			memoryPointer = moduleInformation.modBaseAddr;
-			moduleBaseAddress = moduleInformation.modBaseAddr;
-			moduleSize = moduleInformation.modBaseSize;
-			moduleBaseAddressAsNumber = reinterpret_cast<size_t>(moduleInformation.modBaseAddr);
-		}
-
 		HANDLE processHandle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, argumentManager.getPid());
 		if (processHandle == NULL) {
 
@@ -236,6 +226,37 @@ struct MemoryExtractionManager {
 				throw std::exception{ "A handle to the specified process could not be obtained" };
 			}
 
+		}
+
+		if (argumentManager.getIsModuleOptionSupplied() && argumentManager.getModule().length() == 0) {
+			// The user is asking for the contents of the main module
+			char mainModulePathAsCharArray[MAX_PATH];
+			if (GetProcessImageFileNameA(processHandle, mainModulePathAsCharArray, MAX_PATH) != 0) {
+				std::string mainModulePath(mainModulePathAsCharArray);
+				std::string mainModuleName(mainModulePath.substr(mainModulePath.rfind("\\") + 1));
+				argumentManager.setModule(mainModuleName);
+			}
+			else {
+				CloseHandle(processHandle);
+				throw std::exception{ "The name of the main module could not be obtained" };
+			}
+		}
+
+		BYTE* memoryPointer = NULL; // Virtual address 0x0000000000000000
+
+		// Module option related variables
+		BYTE* moduleBaseAddress;
+		DWORD moduleSize;
+		size_t moduleBaseAddressAsNumber;
+
+		// If the --module option is supplied, I only extract the memory corresponding to the requiered module
+		// In order to do that, I start at the module's base address, instead of at virtual address 0x0000000000000000
+		if (argumentManager.getIsModuleOptionSupplied()) {
+			MODULEENTRY32 moduleInformation = getModuleInformation(argumentManager.getModule());
+			memoryPointer = moduleInformation.modBaseAddr;
+			moduleBaseAddress = moduleInformation.modBaseAddr;
+			moduleSize = moduleInformation.modBaseSize;
+			moduleBaseAddressAsNumber = reinterpret_cast<size_t>(moduleInformation.modBaseAddr);
 		}
 
 		directoryName = createDirectory();
