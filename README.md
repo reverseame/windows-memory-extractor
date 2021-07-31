@@ -34,7 +34,7 @@ In addition, the tool allows you to specify a module of the process in order to 
 .\WindowsMemoryExtractor_x64.exe --pid 1234 --protections "PAGE_READONLY PAGE_EXECUTE_READ" --module user32.dll
 ```
 
-By default, if a module is provided but no memory protections are indicated, all the memory regions of that module whose protections match the supported ones will be extracted. Finally, for additional help, execute the command below:
+By default, if a module is provided but no memory protections are indicated, all the memory regions of that module whose protections match the supported ones will be extracted. The tool also has the --join option, in order to obtain the solicited memory regions of a module in one file. Additionally, if the user wants to get the version information about the file corresponding to a module, there is the --file-version-info option. Finally, for additional help, execute the command below:
 
 ```bash
 .\WindowsMemoryExtractor_x64.exe --help

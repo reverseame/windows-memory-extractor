@@ -24,6 +24,7 @@
 #include <cryptopp/files.h>
 #include <cryptopp/sha.h>
 #include <psapi.h>
+#pragma comment( lib, "Version.lib" )
 
 
 struct ArgumentManager {
@@ -31,14 +32,15 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.5";
+		std::string version = "v1.0.6";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
 			("help,h", "Display this help message")
+			("file-version-info,i", "Retrieve version information about the file corresponding to a module")
 			("join,j", "Generate an additional .dmp file with the contents of the other .dmp files joined")
-			("output-directory,o", po::value<std::string>(), "Directory where the output will be stored")
 			("module,m", po::value<std::string>(), "Module of the process")
+			("output-directory,o", po::value<std::string>(), "Directory where the output will be stored")
 			("pid,p", po::value<int>()->required(), "Process ID")
 			("protections,s", po::value<std::string>(), "Memory protections")
 			("version,v", "Version")
@@ -75,6 +77,15 @@ struct ArgumentManager {
 			if (!isModuleOptionSupplied) {
 				// The --join option was included to work alongside the --module option
 				// If the --join option is supplied without the --module option, the tool interprets that the user is asking for the contents of the main module
+				isModuleOptionSupplied = true;
+			}
+		}
+
+		if (vm.count("file-version-info")) {
+			isFileVersionInfoOptionSupplied = true;
+			if (!isModuleOptionSupplied) {
+				// As with the --join option, the --file-version-info option is implemented to work alongside the --module option
+				// If the --file-version-info option is supplied without the --module option, the tool interprets that the user is asking for the version information of the file corresponding to the main module
 				isModuleOptionSupplied = true;
 			}
 		}
@@ -135,6 +146,10 @@ struct ArgumentManager {
 		return isOutputDirectoryOptionSupplied;
 	}
 
+	bool getIsFileVersionInfoOptionSupplied() {
+		return isFileVersionInfoOptionSupplied;
+	}
+
 private:
 
 	void validateProtections(std::string suppliedProtectionsAsString) {
@@ -193,6 +208,7 @@ private:
 	bool isProtectionsOptionSupplied;
 	bool isJoinOptionSupplied;
 	bool isOutputDirectoryOptionSupplied;
+	bool isFileVersionInfoOptionSupplied;
 
 };
 
@@ -229,7 +245,7 @@ struct MemoryExtractionManager {
 		}
 
 		if (argumentManager.getIsModuleOptionSupplied() && argumentManager.getModule().length() == 0) {
-			// The user is asking for the contents of the main module
+			// The user is asking for data about the main module
 			char mainModulePathAsCharArray[MAX_PATH];
 			if (GetProcessImageFileNameA(processHandle, mainModulePathAsCharArray, MAX_PATH) != 0) {
 				std::string mainModulePath(mainModulePathAsCharArray);
@@ -241,6 +257,8 @@ struct MemoryExtractionManager {
 				throw std::exception{ "The name of the main module could not be obtained" };
 			}
 		}
+
+		directoryName = createDirectory();
 
 		BYTE* memoryPointer = NULL; // Virtual address 0x0000000000000000
 
@@ -257,9 +275,25 @@ struct MemoryExtractionManager {
 			moduleBaseAddress = moduleInformation.modBaseAddr;
 			moduleSize = moduleInformation.modBaseSize;
 			moduleBaseAddressAsNumber = reinterpret_cast<size_t>(moduleInformation.modBaseAddr);
-		}
 
-		directoryName = createDirectory();
+			if (argumentManager.getIsFileVersionInfoOptionSupplied()) {
+				std::wstring modulePathW{ moduleInformation.szExePath };
+				std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+				std::string modulePath = converter.to_bytes(modulePathW);
+				DWORD dwHandle;
+				DWORD fileVersionInfoSize = GetFileVersionInfoSizeA(modulePath.c_str(), &dwHandle);
+				if (fileVersionInfoSize == 0) {
+					throw std::exception{ "An error has occurred trying to get the version information at function GetFileVersionInfoSizeA" };
+				}
+				std::vector<unsigned char> fileVersionInfoBuffer(fileVersionInfoSize);
+				if (!GetFileVersionInfoA(modulePath.c_str(), dwHandle, fileVersionInfoSize, &fileVersionInfoBuffer[0]))
+				{
+					throw std::exception{ "An error has occurred trying to get the version information at function GetFileVersionInfoA" };
+				}
+
+				retrieveFileVersionInformation(&fileVersionInfoBuffer[0]);
+			}
+		}
 
 		std::ofstream resultsFile(directoryName + "/results.txt", std::ofstream::out);
 		resultsFile << "List of .dmp files generated:\n";
@@ -304,7 +338,35 @@ struct MemoryExtractionManager {
 
 			joinedModuleContentsStream.close();
 		}
-		resultsFile << "Number of .dmp files generated: " << dmpFilesGeneratedCount << std::endl;
+
+		resultsFile << "Number of .dmp files generated: " << dmpFilesGeneratedCount << "\n";
+
+		if (argumentManager.getIsFileVersionInfoOptionSupplied()) {
+			resultsFile << "\nAdditional files generated:\n";
+
+			using namespace CryptoPP;
+			dmpFilesGeneratedCount++;
+
+			// Calculate the SHA-256 of the file moduleFileVersionInfo.fileinfo
+			std::ifstream moduleFileVersionInfoStream(directoryName + "/moduleFileVersionInfo.fileinfo", std::ios::in | std::ios::binary);
+			std::string contents((std::istreambuf_iterator<char>(moduleFileVersionInfoStream)),
+				(std::istreambuf_iterator<char>()));
+			HexEncoder hexEncoder(new FileSink(resultsFile), false);
+			std::string sha256Digest;
+			SHA256 hash;
+			hash.Update((const byte*)contents.c_str(), contents.length());
+			sha256Digest.resize(hash.DigestSize());
+			hash.Final((byte*)&sha256Digest[0]);
+
+			// Create an entry in the results file for the moduleFileVersionInfo.fileinfo file
+			resultsFile << "Filename: " << "moduleFileVersionInfo.fileinfo" << ", SHA-256: ";
+			StringSource(sha256Digest, true, new Redirector(hexEncoder));
+			resultsFile << "\n";
+
+			moduleFileVersionInfoStream.close();
+		}
+
+		resultsFile << std::endl;
 		resultsFile.close();
 		CloseHandle(processHandle);
 	}
@@ -537,6 +599,53 @@ private:
 		}
 
 		return TRUE;
+	}
+
+	void retrieveFileVersionInformation(LPCVOID fileVersionInfoBufferPointer) {
+		std::vector<std::string> versionInfoKeys{
+			"Comments",
+			"CompanyName",
+			"FileDescription",
+			"FileVersion",
+			"InternalName",
+			"LegalCopyright",
+			"LegalTrademarks",
+			"OriginalFilename",
+			"ProductName",
+			"ProductVersion",
+			"PrivateBuild",
+			"SpecialBuild"
+		};
+
+		struct LANGANDCODEPAGE {
+			WORD wLanguage;
+			WORD wCodePage;
+		} *lpTranslate;
+
+		UINT cbTranslate = 0;
+		if (!VerQueryValueA(fileVersionInfoBufferPointer, "\\VarFileInfo\\Translation", (LPVOID*)&lpTranslate, &cbTranslate)) {
+			throw std::exception{ "An error has occurred trying to get the version information at function VerQueryValueA" };
+		}
+
+		std::ofstream moduleVersionInfoFile(directoryName + "/moduleFileVersionInfo.fileinfo", std::ofstream::out);
+
+		for (unsigned int i = 0; i < (cbTranslate / sizeof(LANGANDCODEPAGE)); i++) {
+			BOOST_FOREACH(const std::string & versionInfoKey, versionInfoKeys) {
+				std::string versionInfoKeyFormat = "\\StringFileInfo\\%04x%04x\\" + versionInfoKey;
+				char versionInfoKeyWithLanguage[256];
+				sprintf_s(versionInfoKeyWithLanguage, versionInfoKeyFormat.c_str(), lpTranslate[i].wLanguage, lpTranslate[i].wCodePage);
+				LPSTR versionInfoValuePointer = NULL;
+				UINT  versionInfoValueSize = 0;
+				if (VerQueryValueA(fileVersionInfoBufferPointer, versionInfoKeyWithLanguage, (LPVOID*)&versionInfoValuePointer, &versionInfoValueSize)) {
+					moduleVersionInfoFile << versionInfoKey << "," << std::string(versionInfoValuePointer) << "\n";
+				}
+				else {
+					// The value for the key is empty
+					moduleVersionInfoFile << versionInfoKey << ",\n";
+				}
+			}
+		}
+		moduleVersionInfoFile.close();
 	}
 
 	ArgumentManager& argumentManager;
