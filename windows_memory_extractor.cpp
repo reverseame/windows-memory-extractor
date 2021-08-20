@@ -32,7 +32,7 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.6";
+		std::string version = "v1.0.7";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
@@ -63,7 +63,8 @@ struct ArgumentManager {
 
 		if (vm.count("module")) {
 			std::string suppliedModule = vm["module"].as<std::string>();
-			if (suppliedModule.length() > 37) {
+			if (suppliedModule.length() > 255) {
+				SetLastError(18);
 				throw std::invalid_argument{ "The module name is too long" };
 			}
 			else {
@@ -167,6 +168,7 @@ private:
 		BOOST_FOREACH(const std::string & protection, suppliedProtections) {
 			bool isProtectionRepeated = std::find(protections.begin(), protections.end(), protection) != protections.end();
 			if (isProtectionRepeated) {
+				SetLastError(160);
 				throw std::invalid_argument{ "The same memory protection cannot be supplied more than once" };
 			}
 
@@ -175,6 +177,7 @@ private:
 				protections.push_back(protection);
 			}
 			else {
+				SetLastError(160);
 				throw std::invalid_argument{ "The memory protections supplied are invalid. "
 					"Supply only supported ones, separate each one with a space, and enclose all of them in quotes" };
 			}
@@ -258,8 +261,6 @@ struct MemoryExtractionManager {
 			}
 		}
 
-		directoryName = createDirectory();
-
 		BYTE* memoryPointer = NULL; // Virtual address 0x0000000000000000
 
 		// Module option related variables
@@ -286,13 +287,16 @@ struct MemoryExtractionManager {
 					throw std::exception{ "An error has occurred trying to get the version information at function GetFileVersionInfoSizeA" };
 				}
 				std::vector<unsigned char> fileVersionInfoBuffer(fileVersionInfoSize);
-				if (!GetFileVersionInfoA(modulePath.c_str(), dwHandle, fileVersionInfoSize, &fileVersionInfoBuffer[0]))
-				{
+				if (!GetFileVersionInfoA(modulePath.c_str(), dwHandle, fileVersionInfoSize, &fileVersionInfoBuffer[0])) {
 					throw std::exception{ "An error has occurred trying to get the version information at function GetFileVersionInfoA" };
 				}
-
+				directoryName = createDirectory();
 				retrieveFileVersionInformation(&fileVersionInfoBuffer[0]);
 			}
+		}
+
+		if (!isDirectoryCreated) {
+			directoryName = createDirectory();
 		}
 
 		std::ofstream resultsFile(directoryName + "/results.txt", std::ofstream::out);
@@ -423,6 +427,7 @@ private:
 		}
 		directoryNameStream << std::dec << argumentManager.getPid() << "_" << std::put_time(&buf, "%d-%m-%Y_%H-%M-%S_UTC");
 		CreateDirectoryA(directoryNameStream.str().c_str(), NULL);
+		isDirectoryCreated = true;
 		return directoryNameStream.str();
 	}
 
@@ -650,6 +655,7 @@ private:
 
 	ArgumentManager& argumentManager;
 	std::string directoryName; // The directory where the memory data files will be placed
+	bool isDirectoryCreated;
 	unsigned int dmpFilesGeneratedCount;
 
 };
