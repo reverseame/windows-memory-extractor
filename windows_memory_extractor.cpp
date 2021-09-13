@@ -32,7 +32,7 @@ struct ArgumentManager {
 	void validateArguments(int argc, char* argv[]) {
 
 		namespace po = boost::program_options;
-		std::string version = "v1.0.7";
+		std::string version = "v1.0.8";
 		po::options_description description("Windows memory extractor " + version + "\nUsage");
 
 		description.add_options()
@@ -499,7 +499,15 @@ private:
 			if (argumentManager.getIsJoinOptionSupplied()) {
 				std::string fullModuleFilePath = directoryName + "/" + "joinedModuleContents.dmp";
 				std::ofstream fullModuleDataFile(fullModuleFilePath, std::ofstream::app | std::ofstream::binary);
+				if (nextAddressAfterModuleRegion != 0 && nextAddressAfterModuleRegion < reinterpret_cast<std::uintptr_t>(memInfo.BaseAddress)) {
+					// Insert padding if memory regions are not contiguous
+					SIZE_T paddingSize = reinterpret_cast<std::uintptr_t>(memInfo.BaseAddress) - nextAddressAfterModuleRegion;
+					auto padding = std::make_unique<char[]>(paddingSize);
+					memset(padding.get(), 0, paddingSize);
+					fullModuleDataFile.write(padding.get(), paddingSize);
+				}
 				fullModuleDataFile.write(memoryContents.get(), memInfo.RegionSize);
+				nextAddressAfterModuleRegion = reinterpret_cast<std::uintptr_t>(memInfo.BaseAddress) + memInfo.RegionSize;
 				fullModuleDataFile.close();
 			}
 		}
@@ -657,6 +665,7 @@ private:
 	std::string directoryName; // The directory where the memory data files will be placed
 	bool isDirectoryCreated;
 	unsigned int dmpFilesGeneratedCount;
+	SIZE_T nextAddressAfterModuleRegion;
 
 };
 
