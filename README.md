@@ -41,4 +41,5 @@ By default, if a module is provided but no memory protections are indicated, all
 ```
 
 ## License
-GNU General Public License v3.0
+
+Licensed under the [GNU GPLv3](LICENSE) license.
